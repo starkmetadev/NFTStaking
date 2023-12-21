@@ -94,26 +94,6 @@ interface IERC20Metadata is IERC20 {
     function decimals() external view returns (uint8);
 }
 
-interface IPancakeV2Router {
-    function WAVAX() external pure returns (address);
-
-    function swapExactTokensForTokensSupportingFeeOnTransferTokens(
-        uint amountIn,
-        uint amountOutMin,
-        address[] calldata path,
-        address to,
-        uint deadline
-    ) external;
-    function swapExactTokensForAVAXSupportingFeeOnTransferTokens(
-        uint amountIn,
-        uint amountOutMin,
-        address[] calldata path,
-        address to,
-        uint deadline
-    ) external;
-    
-}
-
 interface IERC165 {
      function supportsInterface(bytes4 interfaceId) external view returns (bool);
 }
@@ -169,9 +149,6 @@ contract Lockup is Ownable {
 
     uint256 rewardPoolBalance;
 
-    // balance of this contract should be bigger than thresholdMinimum
-    uint256 thresholdMinimum = 0;
-
     // default divisor is 6
     uint8 public divisor = 10;
 
@@ -180,13 +157,8 @@ contract Lockup is Ownable {
     uint256 public totalStaked;     // current total staked value
     uint256 public circulationAmount;
 
-    address treasureWallet;
-
     address deadAddress = 0x000000000000000000000000000000000000dEaD;
     address rewardWallet;
-
-    uint256 irreversibleAmountLimit;
-    uint256 irreversibleAmount;
 
     uint256 minInterval = 15 minutes; // rewards is accumulated every 4 hours
 
@@ -214,8 +186,6 @@ contract Lockup is Ownable {
 
     uint256 defaultAmountForNFT;
 
-    IPancakeV2Router public router;
-
     uint256 initialTime;        // it has the block time when first deposit in this contract (used for calculating rewards)
 
     mapping(address => bool) public whiteList;
@@ -237,20 +207,14 @@ contract Lockup is Ownable {
     event ClaimReward(address rewardToken, address indexed user, uint256 amount);
     event Received(address, uint);
 
-    constructor (address _stakingToken, address _rewardToken, address _router, address _treasury){
+    constructor (address _rewardToken, address _nftAddr){
         // this is for main net
-        stakingToken = IERC20(_stakingToken);
+        StakeNFT = IERC721Metadata(_nftAddr);
         rewardToken = IERC20(_rewardToken);
-        treasureWallet = _treasury;
-        router = IPancakeV2Router(_router);
         whiteList[_msgSender()] = true;
 
-        // default is 10000 amount of tokens
-        irreversibleAmountLimit = 10000 * 10 ** IERC20Metadata(_stakingToken).decimals();
-        // thresholdMinimum = 10 * 10 ** IERC20Metadata(_stakingToken).decimals();
-        rewardPoolBalance = 100_000_000 * 10 ** IERC20Metadata(_stakingToken).decimals();
+        rewardPoolBalance = 100_000_000 * 10 ** IERC20Metadata(_rewardToken).decimals();
         defaultAmountForNFT = 100_000_000 * 10 ** 18;
-
         // initialTime = 1661213742;
     }
     
@@ -272,23 +236,8 @@ contract Lockup is Ownable {
         StakeNFT = IERC721Metadata(nftAddr);
     }
 
-    function setTreasuryWallet(address walletAddr) external onlyOwner {
-        treasureWallet = walletAddr;
-    }
-
-    function setStakingToken(address tokenAddr) external onlyOwner{
-        stakingToken = IERC20(tokenAddr);
-        irreversibleAmountLimit = 10000 * 10 ** IERC20Metadata(tokenAddr).decimals();
-        // thresholdMinimum = 10 * 10 ** IERC20Metadata(tokenAddr).decimals();
-        rewardPoolBalance = 100_000_000 * 10 ** IERC20Metadata(tokenAddr).decimals();
-    }
-
     function setRewardToken(address _rewardToken)  external onlyOwner {
         rewardToken = IERC20(_rewardToken);
-    }
-
-    function setIrreversibleAmountLimit(uint256 val) external onlyOwner {
-        irreversibleAmountLimit = val * 10 ** IERC20Metadata(address(stakingToken)).decimals();
     }
 
     function setDistributionPeriod(uint256 _period) external onlyOwner {
@@ -311,9 +260,8 @@ contract Lockup is Ownable {
         rewardWallet = wallet;
     }
 
-    function setDefaultAmountForNFT(uint[] memory list) external onlyOwner {
-        for (uint i = 0; i < list.length; i++)
-            defaultAmountForNFT[i] = list[i];
+    function setDefaultAmountForNFT(uint amount) external onlyOwner {
+            defaultAmountForNFT = amount;
     }
 
     function doable (address user) private view returns(bool) {
@@ -352,10 +300,6 @@ contract Lockup is Ownable {
     function recoverToken (address token, address sender, uint256 amount) external onlyOwner {
         if (IERC20(token).balanceOf(address(this)) < amount) amount = IERC20(token).balanceOf(address(this));
         IERC20Metadata(token).transfer(sender, amount);
-    }
-
-    function canWithdrawPrimaryToken (uint256 amount) public view returns(bool) {
-        return stakingToken.balanceOf(address(this)) > amount && stakingToken.balanceOf(address(this)).sub(amount) >= thresholdMinimum;
     }
 
     // update the blockList table
@@ -458,7 +402,6 @@ contract Lockup is Ownable {
         require(doable(_msgSender()), "NA");
         require(isExistStakeId(name), "doesn't existed!");
         uint256 amount = stakedUserList[_string2byte32(name)].amount;
-        // require(canWithdrawPrimaryToken(amount), "threshold limit");
         require(stakedUserList[_string2byte32(name)].NFTStakingId != 0, "Invalid operatorN");
         // (uint a, ) = unClaimedReward(name);
         // if(a > 0) _claimReward(name, true);
@@ -476,38 +419,6 @@ contract Lockup is Ownable {
         else if (duration < 180) return month3;   // more than 3 month
         else if (duration < 360) return month6;  // more than 6 month
         else return year1;                      // more than 12 month
-    }
-
-    function swapBack(uint256 amount) private {
-        if(irreversibleAmount + amount >= irreversibleAmountLimit) {
-            require(canWithdrawPrimaryToken(irreversibleAmount + amount), "threshold limit");
-            uint256 deadAmount = (irreversibleAmount + amount) / 5;
-            stakingToken.transfer(deadAddress, deadAmount);
-            // uint256 usdcAmount = (irreversibleAmount + amount) / 5;
-            uint256 nativeTokenAmount = (irreversibleAmount + amount) * 3 / 10;
-            uint256 rewardAmount = (irreversibleAmount + amount) * 1 / 2;
-            // _swapTokensForUSDC(usdcAmount);
-            _swapTokensForNative(nativeTokenAmount);
-            stakingToken.transfer(treasureWallet, rewardAmount);
-            irreversibleAmount = 0;
-        } else {
-            irreversibleAmount += amount;
-        }
-    }
-
-    function _swapTokensForNative(uint256 amount) private {
-        address[] memory path = new address[](2);
-        path[0] = address(stakingToken);
-        path[1] = router.WAVAX();
-        stakingToken.approve(address(router), amount);
-        // make the swap
-        router.swapExactTokensForAVAXSupportingFeeOnTransferTokens(
-            amount,
-            0, // accept any amount of ETH
-            path,
-            treasureWallet,
-            block.timestamp
-        );
     }
 
     function isWithdrawable(string memory name) public view returns(bool) {
@@ -568,15 +479,15 @@ contract Lockup is Ownable {
         require(doable(_msgSender()), "NA");
         require(isClaimable(name), "period not expired!");
         uint256 reward = _calculateReward(name);
-        require(rewardToken.balanceOf(address(this)) >= circulationAmount + reward, "Insufficent pool balance");
+        // require(rewardToken.balanceOf(address(this)) >= circulationAmount + reward, "Insufficent pool balance");
         bytes32 key = _string2byte32(name);
-        // update blockListIndex and lastCliamed value
+        // update blockListIndex and lastClaimed value
         StakeInfo storage info = stakedUserList[key];
         info.blockListIndex = blockList.length - 1;
         uint256 time = block.timestamp;
         info.lastblock = time - (time - initialTime) % minInterval;
         info.lastClaimed = block.timestamp;
-        require(canWithdrawPrimaryToken(reward), "threshold limit1");
+        if (rewardToken.balanceOf(address(this)) < reward) reward = rewardToken.balanceOf(address(this));
         rewardToken.transfer(_msgSender(), reward);
 
         emit ClaimReward(address(rewardToken), _msgSender(), reward);
@@ -610,7 +521,7 @@ contract Lockup is Ownable {
 
     // 
     function getUserStakedNFT(string memory name) external view returns(uint256 tokenId, string memory uri) {
-        if (!isExistStakeId(name)) return (0, "")
+        if (!isExistStakeId(name)) return (0, "");
         return (stakedUserList[_string2byte32(name)].NFTStakingId, StakeNFT.tokenURI(stakedUserList[_string2byte32(name)].NFTStakingId));
     }
 
