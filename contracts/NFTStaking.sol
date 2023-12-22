@@ -140,7 +140,7 @@ interface IERC721Metadata is IERC721 {
     function tokenURI(uint256 tokenId) external view returns (string memory);
 }
 
-contract Lockup is Ownable {
+contract NFTStaking is Ownable {
     using SafeMath for uint256;
 
     IERC20 public  rewardToken;
